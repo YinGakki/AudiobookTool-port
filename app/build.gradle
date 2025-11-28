@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.ncorti.kotlin.template.app' // 保持你的包名不变
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.ncorti.kotlin.template.app"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            // 这里我们配置它去读取环境变量，如果没设置则使用默认
+            storeFile file("debug.keystore")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "android"
+            keyAlias System.getenv("KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "android"
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.10.1'
+    // 改回appcompat以免原生Activity兼容问题，但我们代码里用Activity也没事
+    implementation 'androidx.appcompat:appcompat:1.6.1' 
+    implementation 'com.google.android.material:material:1.9.0'
+}
