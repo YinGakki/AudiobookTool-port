@@ -6,13 +6,14 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/logo" 
+        android:roundIcon="@drawable/logo"
         android:label="Audiobook Tool"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:usesCleartextTraffic="true"> 
-        <!-- 上面这一行 android:usesCleartextTraffic="true" 就是解决这个报错的关键 -->
+        android:usesCleartextTraffic="true">
+        <!-- 上面 icon 和 roundIcon 改成了 @drawable/logo -->
+        <!-- 如果你把图片传到了 mipmap 文件夹，就改成 @mipmap/logo -->
 
         <activity
             android:name=".MainActivity"
