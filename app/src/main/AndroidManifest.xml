@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.ncorti.kotlin.template.app"> <!-- 确保这里有 package -->
+    package="com.ncorti.kotlin.template.app">
 
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -10,8 +10,10 @@
         android:label="Audiobook Tool"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:usesCleartextTraffic="true"> 
+        <!-- 上面这一行 android:usesCleartextTraffic="true" 就是解决这个报错的关键 -->
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
