@@ -1,32 +1,98 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#F5F5F7"> <!-- 全局背景：浅灰白，类似iOS设置页 -->
 
-    <!-- 1. 权限保持不变 -->
-    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 顶部输入区域卡片 -->
+    <LinearLayout
+        android:id="@+id/layoutInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#FFFFFF"
+        android:elevation="4dp"
+        android:padding="20dp">
 
-    <!-- 2. application 标签：删除了导致报错的 backup_rules 和 data_extraction_rules -->
-    <!-- 3. theme 主题：改成了系统自带的 Theme.Material.Light.NoActionBar，防止报错 -->
-    <application
-        android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:label="My Browser"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        tools:targetApi="31">
-        
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:launchMode="singleInstance" 
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Server Connection"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#333333"
+            android:layout_marginBottom="15dp"/>
 
-</manifest>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/etUrl"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_weight="1"
+                android:background="#F0F0F0"
+                android:hint="IP Address / Domain"
+                android:paddingStart="15dp"
+                android:paddingEnd="15dp"
+                android:textSize="16sp"
+                android:inputType="textUri"
+                android:singleLine="true"/>
+
+            <View android:layout_width="10dp" android:layout_height="1dp"/>
+
+            <EditText
+                android:id="@+id/etPort"
+                android:layout_width="80dp"
+                android:layout_height="50dp"
+                android:background="#F0F0F0"
+                android:hint="Port"
+                android:gravity="center"
+                android:inputType="number"
+                android:text="80"
+                android:singleLine="true"/>
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnGo"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:layout_marginTop="15dp"
+            android:backgroundTint="#007AFF"
+            android:text="Connect"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"/>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvHistoryLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="HISTORY"
+        android:padding="15dp"
+        android:textColor="#888888"
+        android:textSize="12sp"
+        android:textStyle="bold"/>
+
+    <!-- 历史记录列表 -->
+    <ListView
+        android:id="@+id/listViewHistory"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:divider="#E0E0E0"
+        android:dividerHeight="1dp"
+        android:background="#FFFFFF"/>
+
+    <!-- 网页展示区域 -->
+    <WebView
+        android:id="@+id/webView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+</LinearLayout>
