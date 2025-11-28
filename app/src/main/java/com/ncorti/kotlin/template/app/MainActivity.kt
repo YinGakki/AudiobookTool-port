@@ -1,81 +1,77 @@
-package com.ncorti.kotlin.template.app // 保持原本包名
+package com.ncorti.kotlin.template.app
 
 import android.app.Activity
-import android.app.AlertDialog // 引入原生对话框
+import android.app.AlertDialog
 import android.content.Context
 import android.os.Bundle
 import android.view.View
-import android.webkit.CookieManager // 引入Cookie管理器
-import android.webkit.HttpAuthHandler
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.view.ViewGroup
+import android.webkit.*
 import android.widget.*
 
 class MainActivity : Activity() {
 
+    // 控件引用
+    private lateinit var layoutHome: LinearLayout
     private lateinit var etUrl: EditText
     private lateinit var etPort: EditText
     private lateinit var btnGo: Button
-    private lateinit var listView: ListView
-    private lateinit var layoutInput: View
-    private lateinit var webView: WebView
-    private lateinit var tvHistoryLabel: TextView // 新增这个控件引用
+    private lateinit var listViewHistory: ListView
     
+    // 浏览器相关控件
+    private lateinit var webviewContainer: FrameLayout
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var btnHome: Button
+    private lateinit var btnRefresh: Button
+    private lateinit var btnSwitch: Button
+    private lateinit var btnClose: Button
+
+    // 数据相关
     private var historyList = ArrayList<String>()
-    private lateinit var adapter: ArrayAdapter<String>
+    private lateinit var historyAdapter: ArrayAdapter<String>
+    
+    // 多标签页管理
+    private val tabs = ArrayList<WebView>() // 存放所有打开的网页
+    private var currentTabIndex = -1 // 当前显示的网页索引
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // 1. 初始化所有控件
+        initViews()
+
+        // 2. 加载历史记录
+        loadHistory()
+        setupHistoryList()
+
+        // 3. 按钮点击事件
+        setupListeners()
+    }
+
+    private fun initViews() {
+        layoutHome = findViewById(R.id.layoutHome)
         etUrl = findViewById(R.id.etUrl)
         etPort = findViewById(R.id.etPort)
         btnGo = findViewById(R.id.btnGo)
-        listView = findViewById(R.id.listViewHistory)
-        layoutInput = findViewById(R.id.layoutInput)
-        webView = findViewById(R.id.webView)
-        tvHistoryLabel = findViewById(R.id.tvHistoryLabel)
+        listViewHistory = findViewById(R.id.listViewHistory)
+        
+        webviewContainer = findViewById(R.id.webviewContainer)
+        bottomBar = findViewById(R.id.bottomBar)
+        btnHome = findViewById(R.id.btnHome)
+        btnRefresh = findViewById(R.id.btnRefresh)
+        btnSwitch = findViewById(R.id.btnSwitch)
+        btnClose = findViewById(R.id.btnClose)
+    }
 
-        setupWebView()
-        loadHistory()
-
-        // 稍微美化一下ListView的显示内容
-        adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, historyList) {
-            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
-                val view = super.getView(position, convertView, parent) as TextView
-                view.setPadding(50, 40, 40, 40) // 增加列表项的内边距，看起来更舒服
-                view.textSize = 16f
-                return view
-            }
-        }
-        listView.adapter = adapter
-
-        listView.setOnItemClickListener { _, _, position, _ ->
-            loadUrlIntoWebView(historyList[position])
-        }
-
-        listView.setOnItemLongClickListener { _, _, position, _ ->
-            val urlToRemove = historyList[position]
-            AlertDialog.Builder(this)
-                .setTitle("Delete History")
-                .setMessage("Remove $urlToRemove?")
-                .setPositiveButton("Yes") { _, _ ->
-                    historyList.removeAt(position)
-                    adapter.notifyDataSetChanged()
-                    saveHistory()
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-            true
-        }
-
+    private fun setupListeners() {
+        // "开始访问" 按钮
         btnGo.setOnClickListener {
             val url = etUrl.text.toString().trim()
             val port = etPort.text.toString().trim()
             
             if (url.isEmpty()) {
-                Toast.makeText(this, "Please enter IP or Domain", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "请输入网址", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
@@ -90,11 +86,130 @@ class MainActivity : Activity() {
             }
 
             addToHistory(finalUrl)
-            loadUrlIntoWebView(finalUrl)
+            createNewTab(finalUrl) // 创建新标签页
+        }
+
+        // 底部：主页按钮
+        btnHome.setOnClickListener {
+            showHomeScreen()
+        }
+
+        // 底部：刷新按钮
+        btnRefresh.setOnClickListener {
+            if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
+                tabs[currentTabIndex].reload()
+            }
+        }
+
+        // 底部：关闭当前按钮
+        btnClose.setOnClickListener {
+            closeCurrentTab()
+        }
+
+        // 底部：切换标签按钮
+        btnSwitch.setOnClickListener {
+            showSwitchTabDialog()
         }
     }
 
-    private fun setupWebView() {
+    // --- 核心逻辑：多标签页管理 ---
+
+    private fun createNewTab(url: String) {
+        // 1. 创建一个新的 WebView
+        val newWebView = WebView(this)
+        val params = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+        newWebView.layoutParams = params
+        
+        // 2. 配置 WebView 设置
+        setupWebViewSettings(newWebView)
+
+        // 3. 添加到列表和容器
+        tabs.add(newWebView)
+        webviewContainer.addView(newWebView)
+        
+        // 4. 加载网址
+        newWebView.loadUrl(url)
+
+        // 5. 切换到这个新页面
+        switchToTab(tabs.size - 1)
+    }
+
+    private fun switchToTab(index: Int) {
+        if (index < 0 || index >= tabs.size) return
+
+        // 隐藏所有 WebView
+        for (i in tabs.indices) {
+            tabs[i].visibility = View.GONE
+        }
+
+        // 显示选中的 WebView
+        tabs[index].visibility = View.VISIBLE
+        currentTabIndex = index
+
+        // 更新界面状态
+        layoutHome.visibility = View.GONE
+        webviewContainer.visibility = View.VISIBLE
+        bottomBar.visibility = View.VISIBLE
+        
+        updateTabButtonText()
+    }
+
+    private fun closeCurrentTab() {
+        if (currentTabIndex == -1) return
+
+        // 移除 View 和 列表项
+        webviewContainer.removeView(tabs[currentTabIndex])
+        tabs[currentTabIndex].destroy() // 销毁防止内存泄漏
+        tabs.removeAt(currentTabIndex)
+
+        if (tabs.isEmpty()) {
+            // 如果没标签了，回主页
+            currentTabIndex = -1
+            showHomeScreen()
+        } else {
+            // 否则显示前一个标签
+            val newIndex = if (currentTabIndex - 1 >= 0) currentTabIndex - 1 else 0
+            switchToTab(newIndex)
+        }
+        updateTabButtonText()
+    }
+
+    private fun showHomeScreen() {
+        // 隐藏浏览器层，显示输入层
+        webviewContainer.visibility = View.GONE
+        bottomBar.visibility = View.GONE
+        layoutHome.visibility = View.VISIBLE
+        // 注意：不销毁 tabs，只是隐藏，想回去可以点列表（这里暂未实现从主页回特定Tab，简单起见主页只用于开新Tab）
+    }
+
+    private fun showSwitchTabDialog() {
+        if (tabs.isEmpty()) return
+
+        // 获取所有页面的标题作为列表
+        val titles = Array(tabs.size) { i ->
+            val title = tabs[i].title ?: "加载中..."
+            val url = tabs[i].url ?: ""
+            "${i + 1}. $title\n$url"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("切换页面")
+            .setItems(titles) { _, which ->
+                switchToTab(which)
+            }
+            .show()
+    }
+
+    private fun updateTabButtonText() {
+        btnSwitch.text = "切换标签(${tabs.size})"
+    }
+
+    // --- 浏览器配置 ---
+
+    private fun setupWebViewSettings(webView: WebView) {
         val settings = webView.settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -102,7 +217,6 @@ class MainActivity : Activity() {
         settings.loadWithOverviewMode = true
         settings.databaseEnabled = true
         
-        // 【关键修复】开启 Cookie，保证登录状态不丢失
         CookieManager.getInstance().setAcceptCookie(true)
 
         webView.webViewClient = object : WebViewClient() {
@@ -111,87 +225,14 @@ class MainActivity : Activity() {
                 return true
             }
 
-            // 【关键修复】处理 HTTP Basic Auth (弹窗输入账号密码)
+            // 处理 401 登录弹窗
             override fun onReceivedHttpAuthRequest(view: WebView?, handler: HttpAuthHandler?, host: String?, realm: String?) {
-                // 弹出一个原生的输入框
                 val layout = LinearLayout(this@MainActivity)
                 layout.orientation = LinearLayout.VERTICAL
                 layout.setPadding(50, 40, 50, 10)
 
                 val etUser = EditText(this@MainActivity)
-                etUser.hint = "Username"
+                etUser.hint = "用户名"
                 layout.addView(etUser)
 
-                val etPass = EditText(this@MainActivity)
-                etPass.hint = "Password"
-                etPass.inputType = 129 // textPassword
-                layout.addView(etPass)
-
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Authentication Required")
-                    .setView(layout)
-                    .setCancelable(false)
-                    .setPositiveButton("Login") { _, _ ->
-                        val user = etUser.text.toString()
-                        val pass = etPass.text.toString()
-                        // 将账号密码传回给 WebView 进行验证
-                        handler?.proceed(user, pass)
-                    }
-                    .setNegativeButton("Cancel") { _, _ ->
-                        handler?.cancel()
-                    }
-                    .show()
-            }
-        }
-    }
-
-    private fun loadUrlIntoWebView(url: String) {
-        layoutInput.visibility = View.GONE
-        listView.visibility = View.GONE
-        tvHistoryLabel.visibility = View.GONE // 隐藏“History”标题
-        webView.visibility = View.VISIBLE
-        webView.loadUrl(url)
-    }
-
-    private fun addToHistory(url: String) {
-        if (historyList.contains(url)) {
-            historyList.remove(url)
-        }
-        historyList.add(0, url)
-        adapter.notifyDataSetChanged()
-        saveHistory()
-    }
-
-    private fun saveHistory() {
-        val sharedPref = getPreferences(Context.MODE_PRIVATE)
-        val editor = sharedPref.edit()
-        val set = HashSet<String>(historyList)
-        editor.putStringSet("HISTORY_KEY_SET", set)
-        editor.apply()
-    }
-
-    private fun loadHistory() {
-        val sharedPref = getPreferences(Context.MODE_PRIVATE)
-        val set = sharedPref.getStringSet("HISTORY_KEY_SET", null)
-        historyList.clear()
-        if (set != null) {
-            historyList.addAll(set)
-        }
-    }
-
-    override fun onBackPressed() {
-        if (webView.visibility == View.VISIBLE) {
-            if (webView.canGoBack()) {
-                webView.goBack()
-            } else {
-                webView.visibility = View.GONE
-                webView.loadUrl("about:blank")
-                layoutInput.visibility = View.VISIBLE
-                listView.visibility = View.VISIBLE
-                tvHistoryLabel.visibility = View.VISIBLE
-            }
-        } else {
-            moveTaskToBack(true) 
-        }
-    }
-}
+                val etPass =
