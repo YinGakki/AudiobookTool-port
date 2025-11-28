@@ -2,23 +2,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 1. 添加网络权限 -->
+    <!-- 1. 权限保持不变 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- 2. application 标签：删除了导致报错的 backup_rules 和 data_extraction_rules -->
+    <!-- 3. theme 主题：改成了系统自带的 Theme.Material.Light.NoActionBar，防止报错 -->
     <application
         android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="My Browser"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MyApplication"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
         tools:targetApi="31">
         
-        <!-- 2. 添加 launchMode="singleInstance" 和 configChanges -->
-        <!-- singleInstance 保证再次点击图标时，直接唤起原有界面，不刷新 -->
-        <!-- configChanges 防止旋转屏幕导致重载 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
