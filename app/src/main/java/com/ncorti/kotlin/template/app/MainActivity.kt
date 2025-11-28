@@ -1,15 +1,18 @@
-package com.ncorti.kotlin.template.app // ⚠️这一行非常重要，必须和你的文件路径一致，不要改！
+package com.ncorti.kotlin.template.app // 保持原本的包名不动
 
+// 1. 修改导入部分：去掉 androidx.appcompat...，换成 android.app.Activity
+import android.app.Activity 
 import android.content.Context
 import android.os.Bundle
 import android.view.View
+import android.webkit.WebSettings // 补全可能缺失的引用
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.*
-import androidx.appcompat.app.AppCompatActivity
-// 注意：这里已经删除了 com.google.gson 的引用
+// 注意：这里不要 import androidx.appcompat.app.AppCompatActivity
 
-class MainActivity : AppCompatActivity() {
+// 2. 修改继承关系：从 AppCompatActivity 改为 Activity
+class MainActivity : Activity() { 
 
     private lateinit var etUrl: EditText
     private lateinit var etPort: EditText
@@ -25,6 +28,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // 下面的逻辑代码完全不用变
         etUrl = findViewById(R.id.etUrl)
         etPort = findViewById(R.id.etPort)
         btnGo = findViewById(R.id.btnGo)
@@ -33,7 +37,7 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
 
         setupWebView()
-        loadHistory() // 加载历史
+        loadHistory()
 
         adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, historyList)
         listView.adapter = adapter
@@ -64,7 +68,6 @@ class MainActivity : AppCompatActivity() {
                 finalUrl = "http://$finalUrl"
             }
             if (port.isNotEmpty()) {
-                 // 简单的检查，如果url里没有端口才加
                 if (!finalUrl.substringAfterLast(":").all { it.isDigit() }) { 
                      finalUrl = "$finalUrl:$port"
                 }
@@ -106,23 +109,20 @@ class MainActivity : AppCompatActivity() {
         saveHistory()
     }
 
-    // 核心修改：不使用Gson，改用安卓原生的 Set 存储
     private fun saveHistory() {
         val sharedPref = getPreferences(Context.MODE_PRIVATE)
         val editor = sharedPref.edit()
-        val set = HashSet<String>(historyList) // 将List转换为Set
+        val set = HashSet<String>(historyList)
         editor.putStringSet("HISTORY_KEY_SET", set)
         editor.apply()
     }
 
-    // 核心修改：不使用Gson，改用安卓原生的 Set 读取
     private fun loadHistory() {
         val sharedPref = getPreferences(Context.MODE_PRIVATE)
         val set = sharedPref.getStringSet("HISTORY_KEY_SET", null)
         historyList.clear()
         if (set != null) {
             historyList.addAll(set)
-            // 因为Set是无序的，如果需要排序可以加一行 historyList.sort()，这里暂时保持简单
         }
     }
 
