@@ -1,330 +1,303 @@
 package com.ncorti.kotlin.template.app
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
 import android.widget.*
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 
 class MainActivity : Activity() {
 
-    // --- 界面控件变量 ---
-    private lateinit var layoutHome: LinearLayout
+    // --- 监控规则 (可修改) ---
+    data class MonitorRule(val keyword: String, val threshold: Int, val alertMessage: String)
+    private val RULES = listOf(
+        MonitorRule("Error", 3, "严重错误 (Error x3)"),
+        MonitorRule("Timeout", 3, "网络超时 (Timeout x3)"),
+        MonitorRule("Exception", 3, "程序异常 (Exception x3)"),
+        MonitorRule("失败", 3, "操作失败报警")
+    )
+    private val CHECK_INTERVAL_MS = 30000L 
+    private val NOTIFY_COOLDOWN_MS = 60000L 
+
+    // --- 变量 ---
+    private var lastNotifyTime = 0L
+    private lateinit var etAlias: EditText
     private lateinit var etUrl: EditText
     private lateinit var etPort: EditText
     private lateinit var btnGo: Button
     private lateinit var listViewHistory: ListView
-    
-    // 浏览器区域控件
+    private lateinit var layoutHome: LinearLayout
     private lateinit var webviewContainer: FrameLayout
     private lateinit var bottomBar: LinearLayout
-    private lateinit var btnHome: Button
-    private lateinit var btnRefresh: Button
-    private lateinit var btnSwitch: Button
-    private lateinit var btnClose: Button
+    private lateinit var btnHome: Button; private lateinit var btnRefresh: Button; private lateinit var btnSwitch: Button; private lateinit var btnClose: Button
 
-    // --- 数据变量 ---
-    private var historyList = ArrayList<String>()
+    private var historyList = ArrayList<String>() // 存储格式: "别名|URL" 或 "URL"
     private lateinit var historyAdapter: ArrayAdapter<String>
-    
-    // 多标签页管理列表
     private val tabs = ArrayList<WebView>() 
     private var currentTabIndex = -1 
+    private val MONITOR_CHANNEL_ID = "monitor_channel"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
-        // 1. 初始化控件
+        createNotificationChannel()
+        checkNotificationPermission()
         initViews()
-
-        // 2. 加载和配置历史记录
         loadHistory()
         setupHistoryList()
-
-        // 3. 设置按钮监听事件
         setupListeners()
     }
 
-    // --- 初始化部分 ---
     private fun initViews() {
-        layoutHome = findViewById(R.id.layoutHome)
+        etAlias = findViewById(R.id.etAlias)
         etUrl = findViewById(R.id.etUrl)
         etPort = findViewById(R.id.etPort)
         btnGo = findViewById(R.id.btnGo)
         listViewHistory = findViewById(R.id.listViewHistory)
-        
+        layoutHome = findViewById(R.id.layoutHome)
         webviewContainer = findViewById(R.id.webviewContainer)
         bottomBar = findViewById(R.id.bottomBar)
-        btnHome = findViewById(R.id.btnHome)
-        btnRefresh = findViewById(R.id.btnRefresh)
-        btnSwitch = findViewById(R.id.btnSwitch)
-        btnClose = findViewById(R.id.btnClose)
+        btnHome = findViewById(R.id.btnHome); btnRefresh = findViewById(R.id.btnRefresh); btnSwitch = findViewById(R.id.btnSwitch); btnClose = findViewById(R.id.btnClose)
     }
 
     private fun setupListeners() {
-        // "开始访问" 按钮
         btnGo.setOnClickListener {
+            val alias = etAlias.text.toString().trim().ifEmpty { "未命名" }
             val url = etUrl.text.toString().trim()
             val port = etPort.text.toString().trim()
             
-            if (url.isEmpty()) {
-                Toast.makeText(this, "请输入网址", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
+            if (url.isEmpty()) { Toast.makeText(this, "请输入网址", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
 
             var finalUrl = url
-            if (!finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
-                finalUrl = "http://$finalUrl"
-            }
-            if (port.isNotEmpty()) {
-                // 如果URL末尾没有端口号，才拼接端口
-                if (!finalUrl.substringAfterLast(":").all { it.isDigit() }) { 
-                     finalUrl = "$finalUrl:$port"
-                }
-            }
+            if (!finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) finalUrl = "http://$finalUrl"
+            if (port.isNotEmpty() && !finalUrl.substringAfterLast(":").all { it.isDigit() }) finalUrl = "$finalUrl:$port"
 
-            addToHistory(finalUrl)
-            createNewTab(finalUrl) // 创建新标签页并打开
+            // 保存格式: Alias|URL
+            val historyItem = "$alias|$finalUrl"
+            addToHistory(historyItem)
+            
+            // 启动保活服务 (模仿 Termux)
+            startKeepAliveService(alias, finalUrl)
+            
+            // 打开页面
+            createNewTab(finalUrl, alias)
         }
+        btnHome.setOnClickListener { showHomeScreen() }
+        btnRefresh.setOnClickListener { if (currentTabIndex >= 0) tabs[currentTabIndex].reload() }
+        btnClose.setOnClickListener { closeCurrentTab() }
+        btnSwitch.setOnClickListener { showSwitchTabDialog() }
+    }
 
-        // 底部栏：主页
-        btnHome.setOnClickListener {
-            showHomeScreen()
-        }
-
-        // 底部栏：刷新
-        btnRefresh.setOnClickListener {
-            if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
-                tabs[currentTabIndex].reload()
-            }
-        }
-
-        // 底部栏：关闭当前
-        btnClose.setOnClickListener {
-            closeCurrentTab()
-        }
-
-        // 底部栏：切换标签
-        btnSwitch.setOnClickListener {
-            showSwitchTabDialog()
+    private fun startKeepAliveService(alias: String, url: String) {
+        val intent = Intent(this, KeepAliveService::class.java)
+        intent.putExtra("ALIAS", alias)
+        intent.putExtra("URL", url)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 
-    // --- 多标签页管理逻辑 ---
-
-    private fun createNewTab(url: String) {
-        // 1. 动态创建一个 WebView
+    private fun createNewTab(url: String, alias: String) {
         val newWebView = WebView(this)
-        val params = FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-        newWebView.layoutParams = params
-        
-        // 2. 配置 WebView (支持JS、弹窗登录等)
-        setupWebViewSettings(newWebView)
-
-        // 3. 添加到容器和列表
+        newWebView.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        setupWebViewSettings(newWebView, alias)
+        newWebView.tag = alias // 把别名存到 tag 里方便取用
         tabs.add(newWebView)
         webviewContainer.addView(newWebView)
-        
-        // 4. 加载网址
         newWebView.loadUrl(url)
-
-        // 5. 切换到这个新页面
         switchToTab(tabs.size - 1)
     }
 
-    private fun switchToTab(index: Int) {
-        if (index < 0 || index >= tabs.size) return
-
-        // 隐藏所有 WebView
-        for (i in tabs.indices) {
-            tabs[i].visibility = View.GONE
-        }
-
-        // 显示选中的 WebView
-        tabs[index].visibility = View.VISIBLE
-        currentTabIndex = index
-
-        // 切换界面状态到“浏览器模式”
-        layoutHome.visibility = View.GONE
-        webviewContainer.visibility = View.VISIBLE
-        bottomBar.visibility = View.VISIBLE
-        
-        updateTabButtonText()
-    }
-
-    private fun closeCurrentTab() {
-        if (currentTabIndex == -1) return
-
-        // 从界面移除
-        webviewContainer.removeView(tabs[currentTabIndex])
-        tabs[currentTabIndex].destroy() // 销毁防内存泄漏
-        tabs.removeAt(currentTabIndex)
-
-        if (tabs.isEmpty()) {
-            // 如果没页面了，回主页
-            currentTabIndex = -1
-            showHomeScreen()
-        } else {
-            // 否则显示前一个页面
-            val newIndex = if (currentTabIndex - 1 >= 0) currentTabIndex - 1 else 0
-            switchToTab(newIndex)
-        }
-        updateTabButtonText()
-    }
-
-    private fun showHomeScreen() {
-        // 只是隐藏浏览器层，显示输入层，不销毁页面
-        webviewContainer.visibility = View.GONE
-        bottomBar.visibility = View.GONE
-        layoutHome.visibility = View.VISIBLE
-    }
-
-    private fun showSwitchTabDialog() {
-        if (tabs.isEmpty()) return
-
-        // 获取所有页面的标题
-        val titles = Array(tabs.size) { i ->
-            val title = tabs[i].title ?: "加载中..."
-            val url = tabs[i].url ?: ""
-            "${i + 1}. $title\n$url"
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("切换页面")
-            .setItems(titles) { _, which ->
-                switchToTab(which)
-            }
-            .show()
-    }
-
-    private fun updateTabButtonText() {
-        btnSwitch.text = "切换(${tabs.size})"
-    }
-
-    // --- WebView 配置 (含登录认证支持) ---
-
-    private fun setupWebViewSettings(webView: WebView) {
+    private fun setupWebViewSettings(webView: WebView, alias: String) {
         val settings = webView.settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
-        settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
         settings.databaseEnabled = true
-        
-        // 开启 Cookie
         CookieManager.getInstance().setAcceptCookie(true)
+        webView.addJavascriptInterface(WebAppInterface(this), "AndroidMonitor")
 
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                view?.loadUrl(url ?: "")
-                return true
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean { view?.loadUrl(url ?: ""); return true }
+
+            // --- 核心：自动登录逻辑 ---
+            override fun onReceivedHttpAuthRequest(view: WebView?, handler: HttpAuthHandler?, host: String?, realm: String?) {
+                // 1. 先查有没有保存过密码
+                val savedCreds = getSavedCredentials(host ?: "")
+                if (savedCreds != null) {
+                    // 有存档，直接自动登录
+                    handler?.proceed(savedCreds.first, savedCreds.second)
+                } else {
+                    // 没存档，弹窗询问
+                    val layout = LinearLayout(this@MainActivity); layout.orientation = LinearLayout.VERTICAL; layout.setPadding(50, 40, 50, 10)
+                    val etUser = EditText(this@MainActivity); etUser.hint = "用户名"; layout.addView(etUser)
+                    val etPass = EditText(this@MainActivity); etPass.hint = "密码"; etPass.inputType = 129; layout.addView(etPass)
+                    
+                    AlertDialog.Builder(this@MainActivity).setTitle("验证并保存").setView(layout).setCancelable(false)
+                        .setPositiveButton("登录") { _, _ ->
+                            val user = etUser.text.toString()
+                            val pass = etPass.text.toString()
+                            // 保存密码到本地
+                            saveCredentials(host ?: "", user, pass)
+                            handler?.proceed(user, pass)
+                        }
+                        .setNegativeButton("取消") { _, _ -> handler?.cancel() }
+                        .show()
+                }
             }
 
-            // 处理 401 Authentication (输入账号密码弹窗)
-            override fun onReceivedHttpAuthRequest(view: WebView?, handler: HttpAuthHandler?, host: String?, realm: String?) {
-                val layout = LinearLayout(this@MainActivity)
-                layout.orientation = LinearLayout.VERTICAL
-                layout.setPadding(50, 40, 50, 10)
-
-                val etUser = EditText(this@MainActivity)
-                etUser.hint = "用户名"
-                layout.addView(etUser)
-
-                val etPass = EditText(this@MainActivity)
-                etPass.hint = "密码"
-                etPass.inputType = 129 // textPassword
-                layout.addView(etPass)
-
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("需要身份验证")
-                    .setView(layout)
-                    .setCancelable(false)
-                    .setPositiveButton("登录") { _, _ ->
-                        handler?.proceed(etUser.text.toString(), etPass.text.toString())
-                    }
-                    .setNegativeButton("取消") { _, _ ->
-                        handler?.cancel()
-                    }
-                    .show()
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                injectMonitorScript(view)
+                // 页面加载完毕，发送登录成功通知
+                sendNotification("运行状态", "别名: $alias\n状态: 正常运行中")
             }
         }
     }
 
-    // --- 历史记录列表逻辑 ---
+    // --- 密码保存/读取逻辑 ---
+    private fun saveCredentials(host: String, user: String, pass: String) {
+        val prefs = getSharedPreferences("AuthPrefs", Context.MODE_PRIVATE)
+        prefs.edit().putString(host, "$user:$pass").apply()
+    }
 
+    private fun getSavedCredentials(host: String): Pair<String, String>? {
+        val prefs = getSharedPreferences("AuthPrefs", Context.MODE_PRIVATE)
+        val saved = prefs.getString(host, null) ?: return null
+        val parts = saved.split(":")
+        if (parts.size == 2) return Pair(parts[0], parts[1])
+        return null
+    }
+
+    // --- 历史记录 (Alias|URL) ---
     private fun setupHistoryList() {
         historyAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, historyList) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent) as TextView
-                view.textSize = 14f // 设置字体大小
+                val raw = getItem(position) ?: ""
+                // 显示时，把 "Alias|URL" 变成好看的格式
+                if (raw.contains("|")) {
+                    val parts = raw.split("|")
+                    view.text = "${parts[0]}\n${parts[1]}"
+                } else {
+                    view.text = raw
+                }
+                view.textSize = 14f
                 return view
             }
         }
         listViewHistory.adapter = historyAdapter
-
-        // 点击历史记录
         listViewHistory.setOnItemClickListener { _, _, position, _ ->
-            createNewTab(historyList[position])
+            val item = historyList[position]
+            if (item.contains("|")) {
+                val parts = item.split("|")
+                startKeepAliveService(parts[0], parts[1])
+                createNewTab(parts[1], parts[0])
+            } else {
+                createNewTab(item, "未命名")
+            }
         }
-
-        // 长按删除
         listViewHistory.setOnItemLongClickListener { _, _, position, _ ->
-            AlertDialog.Builder(this)
-                .setTitle("删除记录")
-                .setMessage("确定删除 ${historyList[position]} 吗？")
-                .setPositiveButton("删除") { _, _ ->
-                    historyList.removeAt(position)
-                    historyAdapter.notifyDataSetChanged()
-                    saveHistory()
-                }
-                .setNegativeButton("取消", null)
-                .show()
-            true
+            historyList.removeAt(position); historyAdapter.notifyDataSetChanged(); saveHistory(); true
         }
     }
 
-    private fun addToHistory(url: String) {
-        if (historyList.contains(url)) historyList.remove(url)
-        historyList.add(0, url)
-        historyAdapter.notifyDataSetChanged()
-        saveHistory()
+    private fun addToHistory(item: String) {
+        if (historyList.contains(item)) historyList.remove(item)
+        historyList.add(0, item); historyAdapter.notifyDataSetChanged(); saveHistory()
     }
-
-    private fun saveHistory() {
-        val sharedPref = getPreferences(Context.MODE_PRIVATE)
-        val editor = sharedPref.edit()
-        val set = HashSet<String>(historyList)
-        editor.putStringSet("HISTORY_KEY_SET", set)
-        editor.apply()
-    }
-
+    private fun saveHistory() { getPreferences(Context.MODE_PRIVATE).edit().putStringSet("HISTORY_V2", HashSet(historyList)).apply() }
     private fun loadHistory() {
-        val sharedPref = getPreferences(Context.MODE_PRIVATE)
-        val set = sharedPref.getStringSet("HISTORY_KEY_SET", null)
-        historyList.clear()
-        if (set != null) historyList.addAll(set)
+        val set = getPreferences(Context.MODE_PRIVATE).getStringSet("HISTORY_V2", null)
+        historyList.clear(); if (set != null) historyList.addAll(set)
     }
 
-    // --- 返回键处理 ---
-    override fun onBackPressed() {
-        // 1. 如果当前页面能后退，就网页后退
-        if (currentTabIndex != -1 && tabs[currentTabIndex].canGoBack()) {
-            tabs[currentTabIndex].goBack()
-        } 
-        // 2. 否则如果浏览器显示着，就回到主页 (保留标签页后台运行)
-        else if (webviewContainer.visibility == View.VISIBLE) {
-            showHomeScreen()
-        } 
-        // 3. 已经在主页了，将 App 挂起至后台
-        else {
-            moveTaskToBack(true)
+    // --- 下面是之前的监控和通知代码，保持不变 ---
+    inner class WebAppInterface(private val mContext: Context) {
+        @JavascriptInterface
+        fun postMessage(alertMessage: String) {
+            Handler(Looper.getMainLooper()).post {
+                val currentTime = System.currentTimeMillis()
+                if (currentTime - lastNotifyTime > NOTIFY_COOLDOWN_MS) {
+                    lastNotifyTime = currentTime
+                    sendNotification("监控报警", alertMessage)
+                }
+            }
         }
+    }
+    
+    private fun injectMonitorScript(webView: WebView?) {
+        val rulesJson = RULES.joinToString(prefix = "[", postfix = "]", separator = ",") { "{key:'${it.keyword}', num:${it.threshold}, msg:'${it.alertMessage}'}" }
+        val jsCode = """
+            if (!window.isMonitorRunning) {
+                window.isMonitorRunning = true;
+                setInterval(function() {
+                    var bodyText = document.body.innerText || "";
+                    var last50Lines = bodyText.split('\n').slice(-50).join('\n');
+                    var rules = $rulesJson;
+                    for (var i = 0; i < rules.length; i++) {
+                        var matches = last50Lines.match(new RegExp(rules[i].key, "g"));
+                        if ((matches ? matches.length : 0) >= rules[i].num) {
+                            window.AndroidMonitor.postMessage(rules[i].msg); break;
+                        }
+                    }
+                }, $CHECK_INTERVAL_MS);
+            }
+        """.trimIndent()
+        webView?.evaluateJavascript(jsCode, null)
+    }
+
+    private fun switchToTab(index: Int) {
+        if (index < 0 || index >= tabs.size) return
+        for (i in tabs.indices) tabs[i].visibility = View.GONE
+        tabs[index].visibility = View.VISIBLE
+        currentTabIndex = index
+        layoutHome.visibility = View.GONE; webviewContainer.visibility = View.VISIBLE; bottomBar.visibility = View.VISIBLE
+        btnSwitch.text = "切换(${tabs.size})"
+    }
+    private fun closeCurrentTab() {
+        if (currentTabIndex == -1) return
+        webviewContainer.removeView(tabs[currentTabIndex]); tabs[currentTabIndex].destroy(); tabs.removeAt(currentTabIndex)
+        if (tabs.isEmpty()) { currentTabIndex = -1; showHomeScreen() } else { switchToTab(if (currentTabIndex - 1 >= 0) currentTabIndex - 1 else 0) }
+    }
+    private fun showHomeScreen() { webviewContainer.visibility = View.GONE; bottomBar.visibility = View.GONE; layoutHome.visibility = View.VISIBLE }
+    private fun showSwitchTabDialog() {
+        if (tabs.isEmpty()) return
+        val titles = Array(tabs.size) { i -> "${i+1}. ${tabs[i].tag ?: "页面"}" }
+        AlertDialog.Builder(this).setTitle("切换页面").setItems(titles) { _, which -> switchToTab(which) }.show()
+    }
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(MONITOR_CHANNEL_ID, "Monitor", NotificationManager.IMPORTANCE_HIGH))
+        }
+    }
+    private fun checkNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+    }
+    private fun sendNotification(title: String, message: String) {
+        val intent = Intent(this, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK }
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+        val builder = NotificationCompat.Builder(this, MONITOR_CHANNEL_ID).setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle(title).setContentText(message).setPriority(NotificationCompat.PRIORITY_HIGH).setContentIntent(pendingIntent).setAutoCancel(true)
+        try { NotificationManagerCompat.from(this).notify(System.currentTimeMillis().toInt(), builder.build()) } catch (e: Exception) {}
+    }
+    override fun onBackPressed() {
+        if (currentTabIndex != -1 && tabs[currentTabIndex].canGoBack()) tabs[currentTabIndex].goBack()
+        else if (webviewContainer.visibility == View.VISIBLE) showHomeScreen()
+        else moveTaskToBack(true)
     }
 }
