@@ -3,17 +3,20 @@
     package="com.ncorti.kotlin.template.app">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 核心：前台服务权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14 需要指定服务类型，这里用 dataSync 比较稳妥 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/logo" 
+        android:icon="@drawable/logo"
         android:roundIcon="@drawable/logo"
         android:label="Audiobook Tool"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="true">
-        <!-- 上面 icon 和 roundIcon 改成了 @drawable/logo -->
-        <!-- 如果你把图片传到了 mipmap 文件夹，就改成 @mipmap/logo -->
 
         <activity
             android:name=".MainActivity"
@@ -26,6 +29,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 注册我们即将创建的保活服务 -->
+        <service 
+            android:name=".KeepAliveService" 
+            android:enabled="true" 
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>
