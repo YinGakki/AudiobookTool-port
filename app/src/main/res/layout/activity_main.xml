@@ -4,30 +4,44 @@
     android:layout_height="match_parent"
     android:background="#F5F5F7">
 
-    <!-- 1. 居中的输入区域 (主页) -->
-    <!-- 增加 android:layout_centerInParent="true" -->
+    <!-- 居中输入区域 -->
     <LinearLayout
         android:id="@+id/layoutHome"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_centerInParent="true"
-        android:layout_marginLeft="30dp"
-        android:layout_marginRight="30dp"
+        android:layout_marginLeft="20dp"
+        android:layout_marginRight="20dp"
         android:orientation="vertical"
         android:background="#FFFFFF"
         android:elevation="8dp"
-        android:padding="25dp">
+        android:padding="20dp">
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="服务器连接"
+            android:text="添加服务器"
             android:textSize="20sp"
             android:textStyle="bold"
             android:textColor="#333333"
             android:layout_marginBottom="20dp"
             android:layout_gravity="center_horizontal"/>
 
+        <!-- 第一行：别名 -->
+        <EditText
+            android:id="@+id/etAlias"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:background="#F0F0F0"
+            android:hint="别名 (例如: 家里NAS)"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:textSize="16sp"
+            android:inputType="text"
+            android:singleLine="true"
+            android:layout_marginBottom="10dp"/>
+
+        <!-- 第二行：IP和端口 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -39,7 +53,7 @@
                 android:layout_height="50dp"
                 android:layout_weight="1"
                 android:background="#F0F0F0"
-                android:hint="IP地址 / 域名"
+                android:hint="IP / 域名"
                 android:paddingStart="10dp"
                 android:paddingEnd="10dp"
                 android:textSize="16sp"
@@ -66,7 +80,7 @@
             android:layout_height="50dp"
             android:layout_marginTop="20dp"
             android:background="#007AFF"
-            android:text="开始访问"
+            android:text="连接并监控"
             android:textColor="#FFFFFF"
             android:textSize="16sp"
             android:textStyle="bold"/>
@@ -75,7 +89,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="历史记录"
-            android:layout_marginTop="30dp"
+            android:layout_marginTop="20dp"
             android:textColor="#888888"
             android:textSize="12sp"/>
 
@@ -88,7 +102,6 @@
             android:layout_marginTop="10dp"/>
     </LinearLayout>
 
-    <!-- 2. 浏览器容器 (存放 WebViews) -->
     <FrameLayout
         android:id="@+id/webviewContainer"
         android:layout_width="match_parent"
@@ -96,7 +109,6 @@
         android:layout_above="@id/bottomBar"
         android:visibility="gone" />
 
-    <!-- 3. 底部操作栏 (默认隐藏) -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
@@ -108,18 +120,14 @@
         android:gravity="center_vertical"
         android:visibility="gone">
 
-        <!-- 首页/新建标签 -->
         <Button
             android:id="@+id/btnHome"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="#00000000"
-            android:text="新建/主页"
-            android:textColor="#333333"
-            android:textSize="12sp"/>
-
-        <!-- 刷新 -->
+            android:text="主页"
+            android:textColor="#333333"/>
         <Button
             android:id="@+id/btnRefresh"
             android:layout_width="0dp"
@@ -127,31 +135,24 @@
             android:layout_weight="1"
             android:background="#00000000"
             android:text="刷新"
-            android:textColor="#333333"
-            android:textSize="12sp"/>
-
-        <!-- 切换标签 -->
+            android:textColor="#333333"/>
         <Button
             android:id="@+id/btnSwitch"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="#00000000"
-            android:text="切换标签(0)"
+            android:text="切换(0)"
             android:textColor="#007AFF"
-            android:textStyle="bold"
-            android:textSize="12sp"/>
-
-        <!-- 关闭当前 -->
+            android:textStyle="bold"/>
         <Button
             android:id="@+id/btnClose"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:background="#00000000"
-            android:text="关闭当前"
-            android:textColor="#FF3B30"
-            android:textSize="12sp"/>
+            android:text="关闭"
+            android:textColor="#FF3B30"/>
     </LinearLayout>
 
 </RelativeLayout>
