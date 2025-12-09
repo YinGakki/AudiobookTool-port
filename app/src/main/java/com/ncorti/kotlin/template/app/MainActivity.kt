@@ -19,37 +19,61 @@ import android.webkit.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import java.util.UUID
 
 class MainActivity : Activity() {
 
-    // --- 监控规则 (可修改) ---
-    data class MonitorRule(val keyword: String, val threshold: Int, val alertMessage: String)
-    private val RULES = listOf(
-        MonitorRule("Error", 3, "严重错误 (Error x3)"),
-        MonitorRule("Timeout", 3, "网络超时 (Timeout x3)"),
-        MonitorRule("Exception", 3, "程序异常 (Exception x3)"),
+    // --- 数据模型 ---
+    data class MonitorRule(var keyword: String, var threshold: Int, var alertMessage: String)
+    
+    // 标签页配置对象
+    data class TabConfig(
+        val id: String = UUID.randomUUID().toString(),
+        var alias: String,
+        var url: String,
+        var rules: MutableList<MonitorRule> = mutableListOf(), // 每个标签独立的规则
+        var isNotifyActive: Boolean = false // 是否显示在通知栏
+    )
+
+    // 默认规则模板
+    private val DEFAULT_RULES = listOf(
+        MonitorRule("Error", 3, "严重错误"),
+        MonitorRule("Timeout", 3, "网络超时"),
+        MonitorRule("Exception", 3, "程序异常"),
         MonitorRule("失败", 3, "操作失败报警")
     )
+
     private val CHECK_INTERVAL_MS = 30000L 
     private val NOTIFY_COOLDOWN_MS = 60000L 
-
-    // --- 变量 ---
     private var lastNotifyTime = 0L
+    private val MONITOR_CHANNEL_ID = "monitor_channel"
+
+    // --- UI 变量 ---
     private lateinit var etAlias: EditText
     private lateinit var etUrl: EditText
-    private lateinit var etPort: EditText
+    // private lateinit var etPort: EditText // 已移除
     private lateinit var btnGo: Button
     private lateinit var listViewHistory: ListView
     private lateinit var layoutHome: LinearLayout
     private lateinit var webviewContainer: FrameLayout
     private lateinit var bottomBar: LinearLayout
-    private lateinit var btnHome: Button; private lateinit var btnRefresh: Button; private lateinit var btnSwitch: Button; private lateinit var btnClose: Button
+    
+    // 底部栏按钮
+    private lateinit var btnHome: Button
+    private lateinit var btnRefresh: Button
+    private lateinit var btnSwitch: Button
+    private lateinit var btnClose: Button
+    private lateinit var btnTabSettings: Button 
+    private lateinit var btnToggleNotify: Button 
 
-    private var historyList = ArrayList<String>() // 存储格式: "别名|URL" 或 "URL"
+    // --- 状态管理 ---
+    private var historyList = ArrayList<String>() 
     private lateinit var historyAdapter: ArrayAdapter<String>
+    
+    // 核心: WebView 和 Config 的映射
     private val tabs = ArrayList<WebView>() 
+    private val tabConfigs = HashMap<WebView, TabConfig>() // 关联 WebView -> Config
     private var currentTabIndex = -1 
-    private val MONITOR_CHANNEL_ID = "monitor_channel"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,47 +89,132 @@ class MainActivity : Activity() {
     private fun initViews() {
         etAlias = findViewById(R.id.etAlias)
         etUrl = findViewById(R.id.etUrl)
-        etPort = findViewById(R.id.etPort)
+        // etPort 已被移除，不再初始化
         btnGo = findViewById(R.id.btnGo)
         listViewHistory = findViewById(R.id.listViewHistory)
         layoutHome = findViewById(R.id.layoutHome)
         webviewContainer = findViewById(R.id.webviewContainer)
         bottomBar = findViewById(R.id.bottomBar)
-        btnHome = findViewById(R.id.btnHome); btnRefresh = findViewById(R.id.btnRefresh); btnSwitch = findViewById(R.id.btnSwitch); btnClose = findViewById(R.id.btnClose)
+        
+        btnHome = findViewById(R.id.btnHome)
+        btnRefresh = findViewById(R.id.btnRefresh)
+        btnSwitch = findViewById(R.id.btnSwitch)
+        btnClose = findViewById(R.id.btnClose)
+        
+        // 尝试获取新按钮，如果 XML 中没有添加，则动态创建以免崩溃（建议在XML中添加）
+        val existingBtnSettings = findViewById<Button>(R.id.btnTabSettings)
+        if (existingBtnSettings == null) {
+            btnTabSettings = Button(this).apply { text = "规则"; id = View.generateViewId() }
+            btnToggleNotify = Button(this).apply { text = "保活:关"; id = View.generateViewId() }
+            // 简单插入到布局中，防止空指针
+            if (bottomBar.childCount >= 2) {
+                bottomBar.addView(btnTabSettings, 1)
+                bottomBar.addView(btnToggleNotify, 2)
+            } else {
+                bottomBar.addView(btnTabSettings)
+                bottomBar.addView(btnToggleNotify)
+            }
+        } else {
+            btnTabSettings = existingBtnSettings
+            btnToggleNotify = findViewById(R.id.btnToggleNotify)
+        }
     }
 
     private fun setupListeners() {
         btnGo.setOnClickListener {
-            val alias = etAlias.text.toString().trim().ifEmpty { "未命名" }
-            val url = etUrl.text.toString().trim()
-            val port = etPort.text.toString().trim()
+            val alias = etAlias.text.toString().trim().ifEmpty { "标签 ${tabs.size + 1}" }
+            var url = etUrl.text.toString().trim()
+            // 移除 etPort 逻辑，直接处理 URL
             
-            if (url.isEmpty()) { Toast.makeText(this, "请输入网址", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+            if (url.isEmpty()) return@setOnClickListener
+            if (!url.startsWith("http://") && !url.startsWith("https://")) url = "http://$url"
 
-            var finalUrl = url
-            if (!finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) finalUrl = "http://$finalUrl"
-            if (port.isNotEmpty() && !finalUrl.substringAfterLast(":").all { it.isDigit() }) finalUrl = "$finalUrl:$port"
-
-            // 保存格式: Alias|URL
-            val historyItem = "$alias|$finalUrl"
-            addToHistory(historyItem)
+            // 保存到历史 (String格式: Alias|URL)
+            addToHistory("$alias|$url")
             
-            // 启动保活服务 (模仿 Termux)
-            startKeepAliveService(alias, finalUrl)
+            // 创建新配置，复制默认规则
+            val newConfig = TabConfig(alias = alias, url = url)
+            newConfig.rules.addAll(DEFAULT_RULES.map { it.copy() }) // 深度复制
             
-            // 打开页面
-            createNewTab(finalUrl, alias)
+            createNewTab(newConfig)
         }
+
         btnHome.setOnClickListener { showHomeScreen() }
-        btnRefresh.setOnClickListener { if (currentTabIndex >= 0) tabs[currentTabIndex].reload() }
+        btnRefresh.setOnClickListener { getCurrentWebView()?.reload() }
         btnClose.setOnClickListener { closeCurrentTab() }
         btnSwitch.setOnClickListener { showSwitchTabDialog() }
+
+        btnTabSettings.setOnClickListener { showMonitorSettingsDialog() }
+        btnToggleNotify.setOnClickListener { toggleNotificationStatus() }
     }
 
-    private fun startKeepAliveService(alias: String, url: String) {
+    private fun getCurrentWebView(): WebView? = if (currentTabIndex >= 0) tabs[currentTabIndex] else null
+    private fun getCurrentConfig(): TabConfig? = getCurrentWebView()?.let { tabConfigs[it] }
+
+    // --- 核心逻辑: 创建标签页 ---
+    private fun createNewTab(config: TabConfig) {
+        val newWebView = WebView(this)
+        newWebView.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        
+        // 存储配置
+        tabConfigs[newWebView] = config
+        
+        setupWebViewSettings(newWebView, config)
+        tabs.add(newWebView)
+        webviewContainer.addView(newWebView)
+        newWebView.loadUrl(config.url)
+        switchToTab(tabs.size - 1)
+    }
+
+    private fun setupWebViewSettings(webView: WebView, config: TabConfig) {
+        val settings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        CookieManager.getInstance().setAcceptCookie(true)
+        
+        // 注入接口
+        webView.addJavascriptInterface(WebAppInterface(this, config.alias), "AndroidMonitor")
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean { view?.loadUrl(url ?: ""); return true }
+            
+            override fun onReceivedHttpAuthRequest(view: WebView?, handler: HttpAuthHandler?, host: String?, realm: String?) {
+                val savedCreds = getSavedCredentials(host ?: "")
+                if (savedCreds != null) {
+                    handler?.proceed(savedCreds.first, savedCreds.second)
+                } else {
+                    showAuthDialog(handler, host)
+                }
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                injectMonitorScript(view, config.rules)
+            }
+        }
+    }
+
+    // --- Service 交互 ---
+    private fun toggleNotificationStatus() {
+        val config = getCurrentConfig() ?: return
+        config.isNotifyActive = !config.isNotifyActive
+        
+        updateButtonState(config)
+        updateService(config)
+    }
+
+    private fun updateService(config: TabConfig) {
         val intent = Intent(this, KeepAliveService::class.java)
-        intent.putExtra("ALIAS", alias)
-        intent.putExtra("URL", url)
+        intent.action = KeepAliveService.ACTION_UPDATE
+        intent.putExtra("TAB_ID", config.id)
+        
+        if (config.isNotifyActive) {
+            intent.putExtra("TAB_TEXT", "${config.alias}: 运行中")
+            intent.putExtra("REMOVE", false)
+        } else {
+            intent.putExtra("REMOVE", true)
+        }
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -113,188 +222,193 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun createNewTab(url: String, alias: String) {
-        val newWebView = WebView(this)
-        newWebView.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        setupWebViewSettings(newWebView, alias)
-        newWebView.tag = alias // 把别名存到 tag 里方便取用
-        tabs.add(newWebView)
-        webviewContainer.addView(newWebView)
-        newWebView.loadUrl(url)
-        switchToTab(tabs.size - 1)
+    private fun updateButtonState(config: TabConfig) {
+        btnToggleNotify.text = if (config.isNotifyActive) "保活:开" else "保活:关"
+        btnToggleNotify.setTextColor(if (config.isNotifyActive) 0xFF00FF00.toInt() else 0xFFFFFFFF.toInt())
     }
 
-    private fun setupWebViewSettings(webView: WebView, alias: String) {
-        val settings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.databaseEnabled = true
-        CookieManager.getInstance().setAcceptCookie(true)
-        webView.addJavascriptInterface(WebAppInterface(this), "AndroidMonitor")
+    // --- 监控规则设置 ---
+    private fun showMonitorSettingsDialog() {
+        val config = getCurrentConfig() ?: return
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("监控规则: ${config.alias}")
+        
+        val rulesStr = config.rules.map { "${it.keyword} (阈值:${it.threshold})" }.toTypedArray()
+        builder.setItems(rulesStr, null) 
+        
+        builder.setNeutralButton("添加自定义") { _, _ -> showAddRuleDialog(config) }
+        builder.setPositiveButton("确定") { _, _ -> 
+             injectMonitorScript(getCurrentWebView(), config.rules)
+             Toast.makeText(this, "规则已更新", Toast.LENGTH_SHORT).show()
+        }
+        builder.show()
+    }
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean { view?.loadUrl(url ?: ""); return true }
+    private fun showAddRuleDialog(config: TabConfig) {
+        val layout = LinearLayout(this); layout.orientation = LinearLayout.VERTICAL; layout.setPadding(50, 40, 50, 10)
+        val etKey = EditText(this); etKey.hint = "关键词 (如: Error)"; layout.addView(etKey)
+        val etCount = EditText(this); etCount.hint = "阈值 (如: 3)"; etCount.inputType = 2; layout.addView(etCount)
+        val etMsg = EditText(this); etMsg.hint = "报警内容"; layout.addView(etMsg)
 
-            // --- 核心：自动登录逻辑 ---
-            override fun onReceivedHttpAuthRequest(view: WebView?, handler: HttpAuthHandler?, host: String?, realm: String?) {
-                // 1. 先查有没有保存过密码
-                val savedCreds = getSavedCredentials(host ?: "")
-                if (savedCreds != null) {
-                    // 有存档，直接自动登录
-                    handler?.proceed(savedCreds.first, savedCreds.second)
-                } else {
-                    // 没存档，弹窗询问
-                    val layout = LinearLayout(this@MainActivity); layout.orientation = LinearLayout.VERTICAL; layout.setPadding(50, 40, 50, 10)
-                    val etUser = EditText(this@MainActivity); etUser.hint = "用户名"; layout.addView(etUser)
-                    val etPass = EditText(this@MainActivity); etPass.hint = "密码"; etPass.inputType = 129; layout.addView(etPass)
-                    
-                    AlertDialog.Builder(this@MainActivity).setTitle("验证并保存").setView(layout).setCancelable(false)
-                        .setPositiveButton("登录") { _, _ ->
-                            val user = etUser.text.toString()
-                            val pass = etPass.text.toString()
-                            // 保存密码到本地
-                            saveCredentials(host ?: "", user, pass)
-                            handler?.proceed(user, pass)
-                        }
-                        .setNegativeButton("取消") { _, _ -> handler?.cancel() }
-                        .show()
+        AlertDialog.Builder(this).setTitle("添加规则").setView(layout)
+            .setPositiveButton("添加") { _, _ ->
+                val k = etKey.text.toString()
+                val c = etCount.text.toString().toIntOrNull() ?: 1
+                val m = etMsg.text.toString().ifEmpty { "发现 $k" }
+                if (k.isNotEmpty()) {
+                    config.rules.add(MonitorRule(k, c, m))
+                    injectMonitorScript(getCurrentWebView(), config.rules)
                 }
-            }
+            }.show()
+    }
 
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                injectMonitorScript(view)
-                // 页面加载完毕，发送登录成功通知
-                sendNotification("运行状态", "别名: $alias\n状态: 正常运行中")
-            }
+    // --- JS 注入 ---
+    private fun injectMonitorScript(webView: WebView?, rules: List<MonitorRule>) {
+        if (webView == null) return
+        val rulesJson = rules.joinToString(prefix = "[", postfix = "]", separator = ",") { 
+            "{key:'${it.keyword}', num:${it.threshold}, msg:'${it.alertMessage}'}" 
         }
-    }
-
-    // --- 密码保存/读取逻辑 ---
-    private fun saveCredentials(host: String, user: String, pass: String) {
-        val prefs = getSharedPreferences("AuthPrefs", Context.MODE_PRIVATE)
-        prefs.edit().putString(host, "$user:$pass").apply()
-    }
-
-    private fun getSavedCredentials(host: String): Pair<String, String>? {
-        val prefs = getSharedPreferences("AuthPrefs", Context.MODE_PRIVATE)
-        val saved = prefs.getString(host, null) ?: return null
-        val parts = saved.split(":")
-        if (parts.size == 2) return Pair(parts[0], parts[1])
-        return null
-    }
-
-    // --- 历史记录 (Alias|URL) ---
-    private fun setupHistoryList() {
-        historyAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, historyList) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val view = super.getView(position, convertView, parent) as TextView
-                val raw = getItem(position) ?: ""
-                // 显示时，把 "Alias|URL" 变成好看的格式
-                if (raw.contains("|")) {
-                    val parts = raw.split("|")
-                    view.text = "${parts[0]}\n${parts[1]}"
-                } else {
-                    view.text = raw
+        val jsCode = """
+            if (window.monitorInterval) clearInterval(window.monitorInterval);
+            var rules = $rulesJson;
+            window.monitorInterval = setInterval(function() {
+                var bodyText = document.body.innerText || "";
+                var last50Lines = bodyText.split('\n').slice(-50).join('\n');
+                for (var i = 0; i < rules.length; i++) {
+                    var matches = last50Lines.match(new RegExp(rules[i].key, "g"));
+                    if ((matches ? matches.length : 0) >= rules[i].num) {
+                        window.AndroidMonitor.postMessage(rules[i].msg);
+                    }
                 }
-                view.textSize = 14f
-                return view
-            }
-        }
-        listViewHistory.adapter = historyAdapter
-        listViewHistory.setOnItemClickListener { _, _, position, _ ->
-            val item = historyList[position]
-            if (item.contains("|")) {
-                val parts = item.split("|")
-                startKeepAliveService(parts[0], parts[1])
-                createNewTab(parts[1], parts[0])
-            } else {
-                createNewTab(item, "未命名")
-            }
-        }
-        listViewHistory.setOnItemLongClickListener { _, _, position, _ ->
-            historyList.removeAt(position); historyAdapter.notifyDataSetChanged(); saveHistory(); true
-        }
+            }, $CHECK_INTERVAL_MS);
+        """.trimIndent()
+        webView.evaluateJavascript(jsCode, null)
     }
 
-    private fun addToHistory(item: String) {
-        if (historyList.contains(item)) historyList.remove(item)
-        historyList.add(0, item); historyAdapter.notifyDataSetChanged(); saveHistory()
-    }
-    private fun saveHistory() { getPreferences(Context.MODE_PRIVATE).edit().putStringSet("HISTORY_V2", HashSet(historyList)).apply() }
-    private fun loadHistory() {
-        val set = getPreferences(Context.MODE_PRIVATE).getStringSet("HISTORY_V2", null)
-        historyList.clear(); if (set != null) historyList.addAll(set)
-    }
-
-    // --- 下面是之前的监控和通知代码，保持不变 ---
-    inner class WebAppInterface(private val mContext: Context) {
+    inner class WebAppInterface(private val mContext: Context, private val tabAlias: String) {
         @JavascriptInterface
         fun postMessage(alertMessage: String) {
             Handler(Looper.getMainLooper()).post {
                 val currentTime = System.currentTimeMillis()
                 if (currentTime - lastNotifyTime > NOTIFY_COOLDOWN_MS) {
                     lastNotifyTime = currentTime
-                    sendNotification("监控报警", alertMessage)
+                    sendNotification("[$tabAlias] 报警", alertMessage)
                 }
             }
         }
     }
-    
-    private fun injectMonitorScript(webView: WebView?) {
-        val rulesJson = RULES.joinToString(prefix = "[", postfix = "]", separator = ",") { "{key:'${it.keyword}', num:${it.threshold}, msg:'${it.alertMessage}'}" }
-        val jsCode = """
-            if (!window.isMonitorRunning) {
-                window.isMonitorRunning = true;
-                setInterval(function() {
-                    var bodyText = document.body.innerText || "";
-                    var last50Lines = bodyText.split('\n').slice(-50).join('\n');
-                    var rules = $rulesJson;
-                    for (var i = 0; i < rules.length; i++) {
-                        var matches = last50Lines.match(new RegExp(rules[i].key, "g"));
-                        if ((matches ? matches.length : 0) >= rules[i].num) {
-                            window.AndroidMonitor.postMessage(rules[i].msg); break;
-                        }
-                    }
-                }, $CHECK_INTERVAL_MS);
-            }
-        """.trimIndent()
-        webView?.evaluateJavascript(jsCode, null)
-    }
 
+    // --- Tab 管理 ---
     private fun switchToTab(index: Int) {
         if (index < 0 || index >= tabs.size) return
-        for (i in tabs.indices) tabs[i].visibility = View.GONE
-        tabs[index].visibility = View.VISIBLE
+        tabs.forEach { it.visibility = View.GONE }
+        val selectedTab = tabs[index]
+        selectedTab.visibility = View.VISIBLE
         currentTabIndex = index
-        layoutHome.visibility = View.GONE; webviewContainer.visibility = View.VISIBLE; bottomBar.visibility = View.VISIBLE
+        
+        val config = tabConfigs[selectedTab]
         btnSwitch.text = "切换(${tabs.size})"
+        if (config != null) updateButtonState(config)
+        
+        layoutHome.visibility = View.GONE; webviewContainer.visibility = View.VISIBLE; bottomBar.visibility = View.VISIBLE
     }
+
     private fun closeCurrentTab() {
         if (currentTabIndex == -1) return
-        webviewContainer.removeView(tabs[currentTabIndex]); tabs[currentTabIndex].destroy(); tabs.removeAt(currentTabIndex)
-        if (tabs.isEmpty()) { currentTabIndex = -1; showHomeScreen() } else { switchToTab(if (currentTabIndex - 1 >= 0) currentTabIndex - 1 else 0) }
+        val webView = tabs[currentTabIndex]
+        val config = tabConfigs[webView]
+        
+        if (config != null && config.isNotifyActive) {
+            config.isNotifyActive = false
+            updateService(config)
+        }
+        
+        webviewContainer.removeView(webView)
+        webView.destroy()
+        tabs.removeAt(currentTabIndex)
+        tabConfigs.remove(webView)
+        
+        if (tabs.isEmpty()) { currentTabIndex = -1; showHomeScreen() } 
+        else { switchToTab(if (currentTabIndex - 1 >= 0) currentTabIndex - 1 else 0) }
     }
+
     private fun showHomeScreen() { webviewContainer.visibility = View.GONE; bottomBar.visibility = View.GONE; layoutHome.visibility = View.VISIBLE }
+    
     private fun showSwitchTabDialog() {
         if (tabs.isEmpty()) return
-        val titles = Array(tabs.size) { i -> "${i+1}. ${tabs[i].tag ?: "页面"}" }
+        val titles = Array(tabs.size) { i -> 
+            val conf = tabConfigs[tabs[i]]
+            val status = if (conf?.isNotifyActive == true) " [ON]" else ""
+            "${i+1}. ${conf?.alias}$status" 
+        }
         AlertDialog.Builder(this).setTitle("切换页面").setItems(titles) { _, which -> switchToTab(which) }.show()
     }
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(MONITOR_CHANNEL_ID, "Monitor", NotificationManager.IMPORTANCE_HIGH))
+
+    private fun showAuthDialog(handler: HttpAuthHandler?, host: String?) {
+         val layout = LinearLayout(this); layout.orientation = LinearLayout.VERTICAL; layout.setPadding(50, 40, 50, 10)
+         val etUser = EditText(this); etUser.hint = "用户名"; layout.addView(etUser)
+         val etPass = EditText(this); etPass.hint = "密码"; etPass.inputType = 129; layout.addView(etPass)
+         AlertDialog.Builder(this).setTitle("登录验证").setView(layout).setCancelable(false)
+             .setPositiveButton("登录") { _, _ ->
+                 val user = etUser.text.toString(); val pass = etPass.text.toString()
+                 saveCredentials(host ?: "", user, pass)
+                 handler?.proceed(user, pass)
+             }
+             .setNegativeButton("取消") { _, _ -> handler?.cancel() }.show()
+    }
+
+    // --- 历史记录 ---
+    private fun setupHistoryList() {
+        historyAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, historyList) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = super.getView(position, convertView, parent) as TextView
+                val raw = getItem(position) ?: ""
+                if (raw.contains("|")) {
+                    val parts = raw.split("|")
+                    view.text = "${parts[0]}\n${parts[1]}"
+                } else {
+                    view.text = raw
+                }
+                return view
+            }
+        }
+        listViewHistory.adapter = historyAdapter
+        listViewHistory.setOnItemClickListener { _, _, position, _ ->
+            val item = historyList[position]
+            val parts = if(item.contains("|")) item.split("|") else listOf("未命名", item)
+            
+            // 修正：点击历史记录时，也创建一个新的 TabConfig，而不传递 String
+            val alias = parts[0]
+            val url = if (parts.size > 1) parts[1] else parts[0]
+            
+            val newConfig = TabConfig(alias = alias, url = url)
+            newConfig.rules.addAll(DEFAULT_RULES.map { it.copy() })
+            createNewTab(newConfig)
+        }
+        listViewHistory.setOnItemLongClickListener { _, _, position, _ ->
+            historyList.removeAt(position); historyAdapter.notifyDataSetChanged(); saveHistory(); true
         }
     }
-    private fun checkNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+
+    // --- 杂项 ---
+    private fun saveCredentials(host: String, user: String, pass: String) { getSharedPreferences("AuthPrefs", Context.MODE_PRIVATE).edit().putString(host, "$user:$pass").apply() }
+    private fun getSavedCredentials(host: String): Pair<String, String>? {
+        val s = getSharedPreferences("AuthPrefs", Context.MODE_PRIVATE).getString(host, null) ?: return null
+        val p = s.split(":"); return if(p.size==2) Pair(p[0], p[1]) else null
     }
+    private fun addToHistory(item: String) { if(historyList.contains(item)) historyList.remove(item); historyList.add(0, item); historyAdapter.notifyDataSetChanged(); saveHistory() }
+    private fun saveHistory() { getPreferences(Context.MODE_PRIVATE).edit().putStringSet("HISTORY_V2", HashSet(historyList)).apply() }
+    private fun loadHistory() { val set = getPreferences(Context.MODE_PRIVATE).getStringSet("HISTORY_V2", null); historyList.clear(); if(set!=null) historyList.addAll(set) }
+    
+    private fun createNotificationChannel() { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(MONITOR_CHANNEL_ID, "Monitor", NotificationManager.IMPORTANCE_HIGH)) }
+    private fun checkNotificationPermission() { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101) }
     private fun sendNotification(title: String, message: String) {
         val intent = Intent(this, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK }
         val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         val builder = NotificationCompat.Builder(this, MONITOR_CHANNEL_ID).setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle(title).setContentText(message).setPriority(NotificationCompat.PRIORITY_HIGH).setContentIntent(pendingIntent).setAutoCancel(true)
         try { NotificationManagerCompat.from(this).notify(System.currentTimeMillis().toInt(), builder.build()) } catch (e: Exception) {}
     }
+    
     override fun onBackPressed() {
         if (currentTabIndex != -1 && tabs[currentTabIndex].canGoBack()) tabs[currentTabIndex].goBack()
         else if (webviewContainer.visibility == View.VISIBLE) showHomeScreen()
