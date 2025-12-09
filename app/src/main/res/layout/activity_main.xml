@@ -153,6 +153,10 @@
             android:background="#00000000"
             android:text="关闭"
             android:textColor="#FF3B30"/>
+        <Button android:id="@+id/btnTabSettings" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="规则" />
+
+        <Button android:id="@+id/btnToggleNotify" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="保活" />
+
     </LinearLayout>
 
 </RelativeLayout>
