@@ -21,19 +21,23 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.util.UUID
 
-class MainActivity : Activity() {
+// --- 数据模型 ---
+data class MonitorRule(var keyword: String, var threshold: Int, var alertMessage: String)
+        
+// 标签页配置对象
+data class TabConfig(
+    val id: String = UUID.randomUUID().toString(),
+    var alias: String,
+    var url: String,
+    var rules: MutableList<MonitorRule> = mutableListOf(), // 每个标签独立的规则
+    var isNotifyActive: Boolean = false, // 是否显示在通知栏
+    var isPinned: Boolean = false, // 是否固定标签页
+    var checkInterval: Long = 30000L, // 个性化检查间隔
+    var appName: String = alias // 关联的应用名称
+)
 
-    // --- 数据模型 ---
-    data class MonitorRule(var keyword: String, var threshold: Int, var alertMessage: String)
+class MainActivity : Activity() {
     
-    // 标签页配置对象
-    data class TabConfig(
-        val id: String = UUID.randomUUID().toString(),
-        var alias: String,
-        var url: String,
-        var rules: MutableList<MonitorRule> = mutableListOf(), // 每个标签独立的规则
-        var isNotifyActive: Boolean = false // 是否显示在通知栏
-    )
 
     // 默认规则模板
     private val DEFAULT_RULES = listOf(
@@ -63,8 +67,9 @@ class MainActivity : Activity() {
     private lateinit var btnRefresh: Button
     private lateinit var btnSwitch: Button
     private lateinit var btnClose: Button
-    private lateinit var btnTabSettings: Button 
-    private lateinit var btnToggleNotify: Button 
+    private lateinit var btnTabSettings: Button
+    private lateinit var btnToggleNotify: Button
+    private lateinit var btnPinTab: Button 
 
     // --- 状态管理 ---
     private var historyList = ArrayList<String>() 
@@ -106,17 +111,21 @@ class MainActivity : Activity() {
         if (existingBtnSettings == null) {
             btnTabSettings = Button(this).apply { text = "规则"; id = View.generateViewId() }
             btnToggleNotify = Button(this).apply { text = "保活:关"; id = View.generateViewId() }
+            btnPinTab = Button(this).apply { text = "固定"; id = View.generateViewId() }
             // 简单插入到布局中，防止空指针
             if (bottomBar.childCount >= 2) {
                 bottomBar.addView(btnTabSettings, 1)
                 bottomBar.addView(btnToggleNotify, 2)
+                bottomBar.addView(btnPinTab, 3)
             } else {
                 bottomBar.addView(btnTabSettings)
                 bottomBar.addView(btnToggleNotify)
+                bottomBar.addView(btnPinTab)
             }
         } else {
             btnTabSettings = existingBtnSettings
             btnToggleNotify = findViewById(R.id.btnToggleNotify)
+            btnPinTab = findViewById(R.id.btnPinTab)
         }
     }
 
@@ -146,6 +155,7 @@ class MainActivity : Activity() {
 
         btnTabSettings.setOnClickListener { showMonitorSettingsDialog() }
         btnToggleNotify.setOnClickListener { toggleNotificationStatus() }
+        btnPinTab.setOnClickListener { toggleTabPin() }
     }
 
     private fun getCurrentWebView(): WebView? = if (currentTabIndex >= 0) tabs[currentTabIndex] else null
@@ -160,10 +170,19 @@ class MainActivity : Activity() {
         tabConfigs[newWebView] = config
         
         setupWebViewSettings(newWebView, config)
-        tabs.add(newWebView)
+        
+        // 如果是固定标签页，添加到列表前面，否则添加到列表后面
+        val insertIndex = if (config.isPinned) {
+            // 找到最后一个固定标签页的位置
+            tabs.indexOfLast { tabConfigs[it]?.isPinned == true } + 1
+        } else {
+            tabs.size
+        }
+        
+        tabs.add(insertIndex, newWebView)
         webviewContainer.addView(newWebView)
         newWebView.loadUrl(config.url)
-        switchToTab(tabs.size - 1)
+        switchToTab(insertIndex)
     }
 
     private fun setupWebViewSettings(webView: WebView, config: TabConfig) {
@@ -172,8 +191,9 @@ class MainActivity : Activity() {
         settings.domStorageEnabled = true
         CookieManager.getInstance().setAcceptCookie(true)
         
-        // 注入接口
-        webView.addJavascriptInterface(WebAppInterface(this, config.alias), "AndroidMonitor")
+        // 注入接口，使用appName作为标签别名
+        val tabAlias = if (config.appName.isNotEmpty()) config.appName else config.alias
+        webView.addJavascriptInterface(WebAppInterface(this, tabAlias), "AndroidMonitor")
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean { view?.loadUrl(url ?: ""); return true }
@@ -198,9 +218,40 @@ class MainActivity : Activity() {
     private fun toggleNotificationStatus() {
         val config = getCurrentConfig() ?: return
         config.isNotifyActive = !config.isNotifyActive
-        
         updateButtonState(config)
         updateService(config)
+        
+        // 发送状态通知
+        val appName = if (config.appName.isNotEmpty()) config.appName else "监控"
+        sendNotification("运行状态", "[$appName]正在运行")
+    }
+    
+    private fun toggleTabPin() {
+        if (currentTabIndex == -1) return
+        val webView = tabs[currentTabIndex]
+        val config = tabConfigs[webView]
+        
+        if (config != null) {
+            config.isPinned = !config.isPinned
+            
+            if (config.isPinned) {
+                // 将标签页移动到固定标签页区域的末尾
+                tabs.removeAt(currentTabIndex)
+                val insertIndex = tabs.indexOfLast { tab -> tabConfigs[tab]?.isPinned == true } + 1
+                tabs.add(insertIndex, webView)
+                currentTabIndex = insertIndex
+                switchToTab(currentTabIndex)
+            } else {
+                // 如果取消固定，将标签页移动到非固定标签页区域的开头
+                tabs.removeAt(currentTabIndex)
+                val insertIndex = tabs.indexOfLast { tab -> tabConfigs[tab]?.isPinned == true } + 1
+                tabs.add(insertIndex, webView)
+                currentTabIndex = insertIndex
+                switchToTab(currentTabIndex)
+            }
+            
+            Toast.makeText(this, if (config.isPinned) "标签页已固定" else "标签页已取消固定", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun updateService(config: TabConfig) {
@@ -225,6 +276,8 @@ class MainActivity : Activity() {
     private fun updateButtonState(config: TabConfig) {
         btnToggleNotify.text = if (config.isNotifyActive) "保活:开" else "保活:关"
         btnToggleNotify.setTextColor(if (config.isNotifyActive) 0xFF00FF00.toInt() else 0xFFFFFFFF.toInt())
+        btnPinTab.text = if (config.isPinned) "取消固定" else "固定"
+        btnPinTab.setTextColor(if (config.isPinned) 0xFFFF0000.toInt() else 0xFF000000.toInt())
     }
 
     // --- 监控规则设置 ---
@@ -233,13 +286,62 @@ class MainActivity : Activity() {
         val builder = AlertDialog.Builder(this)
         builder.setTitle("监控规则: ${config.alias}")
         
-        val rulesStr = config.rules.map { "${it.keyword} (阈值:${it.threshold})" }.toTypedArray()
-        builder.setItems(rulesStr, null) 
+        // 创建自定义布局，包含监控间隔设置
+        val layout = LinearLayout(this)
+        layout.orientation = LinearLayout.VERTICAL
+        layout.setPadding(50, 40, 50, 10)
         
+        // 添加应用名称设置
+        val etAppName = EditText(this)
+        etAppName.hint = "应用名称（用于通知）"
+        etAppName.setText(config.appName)
+        layout.addView(etAppName)
+        
+        // 添加检查间隔设置
+        val etCheckInterval = EditText(this)
+        etCheckInterval.hint = "检查间隔（毫秒，默认30000）"
+        etCheckInterval.setText(config.checkInterval.toString())
+        etCheckInterval.inputType = 2 // 数字输入
+        layout.addView(etCheckInterval)
+        
+        // 添加规则列表
+        val rulesListView = ListView(this)
+        val rulesStr = config.rules.map { "${it.keyword} (阈值:${it.threshold})" }.toTypedArray()
+        val rulesAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, rulesStr)
+        rulesListView.adapter = rulesAdapter
+        rulesListView.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 300)
+        
+        // 添加规则点击删除功能
+        rulesListView.setOnItemLongClickListener { _, _, position, _ ->
+            AlertDialog.Builder(this)
+                .setTitle("删除规则")
+                .setMessage("确定要删除此规则吗？")
+                .setPositiveButton("确定") { _, _ ->
+                    config.rules.removeAt(position)
+                    showMonitorSettingsDialog() // 刷新对话框
+                }
+                .setNegativeButton("取消", null)
+                .show()
+            true
+        }
+        
+        layout.addView(rulesListView)
+        
+        builder.setView(layout)
         builder.setNeutralButton("添加自定义") { _, _ -> showAddRuleDialog(config) }
         builder.setPositiveButton("确定") { _, _ -> 
-             injectMonitorScript(getCurrentWebView(), config.rules)
-             Toast.makeText(this, "规则已更新", Toast.LENGTH_SHORT).show()
+            // 保存应用名称
+            config.appName = etAppName.text.toString().trim()
+            
+            // 保存检查间隔
+            val intervalText = etCheckInterval.text.toString().trim()
+            if (intervalText.isNotEmpty()) {
+                config.checkInterval = intervalText.toLongOrNull() ?: CHECK_INTERVAL_MS
+            }
+            
+            // 更新监控脚本
+            injectMonitorScript(getCurrentWebView(), config.rules)
+            Toast.makeText(this, "规则已更新", Toast.LENGTH_SHORT).show()
         }
         builder.show()
     }
@@ -265,6 +367,8 @@ class MainActivity : Activity() {
     // --- JS 注入 ---
     private fun injectMonitorScript(webView: WebView?, rules: List<MonitorRule>) {
         if (webView == null) return
+        val config = tabConfigs[webView] ?: return
+        
         val rulesJson = rules.joinToString(prefix = "[", postfix = "]", separator = ",") { 
             "{key:'${it.keyword}', num:${it.threshold}, msg:'${it.alertMessage}'}" 
         }
@@ -280,7 +384,7 @@ class MainActivity : Activity() {
                         window.AndroidMonitor.postMessage(rules[i].msg);
                     }
                 }
-            }, $CHECK_INTERVAL_MS);
+            }, ${config.checkInterval});
         """.trimIndent()
         webView.evaluateJavascript(jsCode, null)
     }
@@ -311,12 +415,24 @@ class MainActivity : Activity() {
         if (config != null) updateButtonState(config)
         
         layoutHome.visibility = View.GONE; webviewContainer.visibility = View.VISIBLE; bottomBar.visibility = View.VISIBLE
+        
+        // 发送状态通知
+        if (config != null && config.isNotifyActive) {
+            val appName = if (config.appName.isNotEmpty()) config.appName else "监控"
+            sendNotification("运行状态", "[$appName]正在运行")
+        }
     }
 
     private fun closeCurrentTab() {
         if (currentTabIndex == -1) return
         val webView = tabs[currentTabIndex]
         val config = tabConfigs[webView]
+        
+        // 检查标签页是否被固定，如果固定则不允许关闭
+        if (config?.isPinned == true) {
+            Toast.makeText(this, "固定标签页无法关闭", Toast.LENGTH_SHORT).show()
+            return
+        }
         
         if (config != null && config.isNotifyActive) {
             config.isNotifyActive = false
@@ -336,12 +452,138 @@ class MainActivity : Activity() {
     
     private fun showSwitchTabDialog() {
         if (tabs.isEmpty()) return
-        val titles = Array(tabs.size) { i -> 
-            val conf = tabConfigs[tabs[i]]
-            val status = if (conf?.isNotifyActive == true) " [ON]" else ""
-            "${i+1}. ${conf?.alias}$status" 
+        
+        // 创建自定义列表项布局
+        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, Array(tabs.size) { i -> "" }) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = LinearLayout(context)
+                view.orientation = LinearLayout.HORIZONTAL
+                view.setPadding(10, 10, 10, 10)
+                
+                val tab = tabs[position]
+                val config = tabConfigs[tab]
+                
+                // 创建标签页信息文本
+                val textView = TextView(context)
+                val pinnedMark = if (config?.isPinned == true) " 📌 " else " "
+                val status = if (config?.isNotifyActive == true) " [ON]" else ""
+                textView.text = "${position+1}.${pinnedMark}${config?.alias}$status"
+                textView.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                textView.gravity = android.view.Gravity.CENTER_VERTICAL
+                view.addView(textView)
+                
+                // 创建操作按钮容器
+                val buttonContainer = LinearLayout(context)
+                buttonContainer.orientation = LinearLayout.HORIZONTAL
+                buttonContainer.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                
+                // 添加固定/取消固定按钮
+                val pinButton = Button(context)
+                pinButton.text = if (config?.isPinned == true) "取消固定" else "固定"
+                pinButton.textSize = 12f
+                pinButton.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                pinButton.setPadding(5, 2, 5, 2)
+                pinButton.setOnClickListener { 
+                    // 处理固定/取消固定操作
+                    if (config != null) {
+                        config.isPinned = !config.isPinned
+                        
+                        if (config.isPinned) {
+                            // 将标签页移动到固定标签页区域的末尾
+                            tabs.removeAt(position)
+                            val insertIndex = tabs.indexOfLast { tab -> tabConfigs[tab]?.isPinned == true } + 1
+                            tabs.add(insertIndex, tab)
+                        } else {
+                            // 如果取消固定，将标签页移动到非固定标签页区域的开头
+                            tabs.removeAt(position)
+                            val insertIndex = tabs.indexOfLast { tab -> tabConfigs[tab]?.isPinned == true } + 1
+                            tabs.add(insertIndex, tab)
+                        }
+                        
+                        // 刷新对话框
+                        notifyDataSetChanged()
+                        
+                        // 如果是当前选中的标签页，更新按钮状态
+                        if (position == currentTabIndex) {
+                            updateButtonState(config)
+                        }
+                    }
+                }
+                buttonContainer.addView(pinButton)
+                
+                // 添加设置按钮
+                val settingsButton = Button(context)
+                settingsButton.text = "设置"
+                settingsButton.textSize = 12f
+                settingsButton.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                settingsButton.setPadding(5, 2, 5, 2)
+                settingsButton.setOnClickListener { 
+                    // 处理设置操作
+                    dismissDialog()
+                    switchToTab(position)
+                    showMonitorSettingsDialog()
+                }
+                buttonContainer.addView(settingsButton)
+                
+                // 添加关闭按钮
+                val closeButton = Button(context)
+                closeButton.text = "关闭"
+                closeButton.textSize = 12f
+                closeButton.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                closeButton.setPadding(5, 2, 5, 2)
+                closeButton.setBackgroundColor(0xFFFF3B30.toInt())
+                closeButton.setTextColor(0xFFFFFFFF.toInt())
+                closeButton.setOnClickListener { 
+                    // 处理关闭操作
+                    if (config?.isPinned == true) {
+                        Toast.makeText(context, "固定标签页无法关闭", Toast.LENGTH_SHORT).show()
+                    } else {
+                        tabs.removeAt(position)
+                        webviewContainer.removeView(tab)
+                        tab.destroy()
+                        tabConfigs.remove(tab)
+                        
+                        // 刷新对话框
+                        notifyDataSetChanged()
+                        
+                        // 更新当前选中的标签页
+                        if (position < currentTabIndex) {
+                            currentTabIndex--
+                        } else if (position == currentTabIndex) {
+                            if (tabs.isEmpty()) {
+                                currentTabIndex = -1
+                                showHomeScreen()
+                                dismissDialog()
+                            } else {
+                                val newIndex = if (currentTabIndex - 1 >= 0) currentTabIndex - 1 else 0
+                                switchToTab(newIndex)
+                                dismissDialog()
+                            }
+                        }
+                        
+                        if (tabs.isEmpty()) {
+                            dismissDialog()
+                        }
+                    }
+                }
+                buttonContainer.addView(closeButton)
+                
+                view.addView(buttonContainer)
+                
+                return view
+            }
+            
+            // 隐藏对话框的辅助方法
+            private fun dismissDialog() {
+                val dialog = parent.parent as? AlertDialog
+                dialog?.dismiss()
+            }
         }
-        AlertDialog.Builder(this).setTitle("切换页面").setItems(titles) { _, which -> switchToTab(which) }.show()
+        
+        AlertDialog.Builder(this)
+            .setTitle("切换页面")
+            .setAdapter(adapter) { _, which -> switchToTab(which) }
+            .show()
     }
 
     private fun showAuthDialog(handler: HttpAuthHandler?, host: String?) {

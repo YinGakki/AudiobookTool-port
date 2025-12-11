@@ -156,6 +156,7 @@
         <Button android:id="@+id/btnTabSettings" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="规则" />
 
         <Button android:id="@+id/btnToggleNotify" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="保活" />
+        <Button android:id="@+id/btnPinTab" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="固定" />
 
     </LinearLayout>
 
